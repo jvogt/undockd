@@ -48,10 +48,11 @@ Apple Events*.
 
 ## Behavior
 
-- **Docked** (the configured Thunderbolt hub is present): OBS profile is set
-  to the mapped "Docked" profile, the on-air watcher runs.
-- **Undocked**: OBS profile set to the mapped "Undocked" profile, on-air
-  watcher stopped.
+- **Docked** (the configured Thunderbolt hub is present): the OBS scene
+  collection is set to the mapped "Docked" collection, the on-air watcher
+  runs.
+- **Undocked**: OBS scene collection set to the mapped "Undocked"
+  collection, on-air watcher stopped.
 - **If OBS should be running but isn't, it is started** (`dockd-obs
   ensure-running`).
 - **virtualcam-sleep** (always on): stops the OBS virtual camera when the
@@ -59,35 +60,54 @@ Apple Events*.
   restarts it on activity, and never stops it during an active meeting.
 - **on-air** (while docked): watches Zoom / Google Meet mute state and
   switches Home Assistant scenes (`unmuted` / `muted` / `unknown`); also
-  drives the Quick Keys pad: on connect every key label is cleared, then
-  key 0 shows "Muted"/"Unmuted" while in a meeting (blank otherwise) and
-  toggles the meeting mute; key 1 shows "Out: Sys"/"Out:Pods" and toggles
-  the system output to AirPods (briefly overlaying "No AirPods" when none
-  are available). Switching to AirPods pins the default *input* device so
-  macOS can't hijack it onto the AirPods mic (`audio.keep_input`). The
-  wheel ring mirrors on-air state (red = on air, green = muted,
-  dim blue = idle).
+  drives the Quick Keys pad. On connect every key label is cleared, then:
+  - key 0 — "Muted"/"Unmuted" while in a meeting (blank otherwise);
+    pressing toggles the meeting mute, and muting inside Zoom/Meet updates
+    the key within ~0.5s.
+  - key 1 — "Out: <label>" for the current output; pressing cycles through
+    the `audio.output_cycle` allow-list (configured in Settings, with short
+    custom labels). Fewer than two present choices flashes
+    "No Output Choices". AirPods in the list are included when available
+    but disconnected — selecting them connects them.
+  - key 2 — "In: <label>" for the current input; cycles
+    `audio.input_cycle`; flashes "No Input Choices" when there is nothing
+    to switch to.
+  - key 3 — the current OBS scene collection name ("Docked"/"Undocked";
+    the key text is limited to 8 characters, so no "OBS:" prefix); pressing
+    flips between the docked/undocked mapped scene collections. Shows
+    "No OBS" when OBS is unreachable.
+
+  When the on-air watcher stops (e.g. on undock), all key labels and the
+  wheel ring are cleared so the pad goes dark.
+
+  Switching output to AirPods pins the default *input* device so macOS
+  can't hijack it onto the AirPods mic (`audio.keep_input`). The wheel ring
+  mirrors on-air state (red = on air, green = muted, dim blue = idle).
 
 ### Menubar icon
 
 | State | Icon |
 | --- | --- |
-| AirPods available, not active output | dimmed/outline AirPods |
-| AirPods active output | solid AirPods |
 | AirPods active output *and* input | AirPods + mic badge |
-| No AirPods available | speaker |
+| AirPods active output | AirPods |
+| AirPods available, output elsewhere | speaker |
+| No AirPods available | dim speaker |
 | On air | red dot overlay |
 
-Left click: toggle AirPods as output (connects them first if needed); opens
-the menu instead when no AirPods are available. Right click: menu with
-status lines (docked, AirPods, on air, virtual camera, daemon health),
-virtual-camera and AirPods toggles, and Settings.
+Left click: toggle AirPods as output (connects them first if needed); when
+no AirPods are available (dim speaker) it opens the menu instead. Right
+click: menu with status lines (docked, AirPods, on air, virtual camera,
+daemon health), virtual-camera and AirPods toggles, and Settings.
 
 ### Settings
 
-OBS profile dropdowns for the Docked/Undocked slots (fetched live from OBS),
-dock-detection match string, Home Assistant URL/token, tools location, and an
-"Open Logs in Console" button. Logs are also queryable with:
+OBS scene-collection dropdowns for the Docked/Undocked slots (fetched live
+from OBS),
+dock-detection match string, Home Assistant URL/token, the Quick Keys
+output/input cycle lists (device picker + short custom label per entry —
+the pad fits ~5 characters after the "Out:"/"In:" prefix), tools location,
+and an "Open Logs in Console" button. Saving restarts the daemons so
+changes apply immediately. Logs are also queryable with:
 
 ```bash
 log stream --predicate 'subsystem == "com.jvogt.dockd"' --info
@@ -97,7 +117,7 @@ log stream --predicate 'subsystem == "com.jvogt.dockd"' --info
 
 - **Python for all tools, Swift only for the menubar app.** Each tool is
   independently shell-scriptable; the app is a thin orchestrator.
-- **Settings** cover the OBS profile mapping, dock match string, HA
+- **Settings** cover the OBS scene-collection mapping, dock match string, HA
   URL/token, and tools path; everything else is config-file-only
   (`config.py` documents all keys).
 - **Menubar icon** shows the active-output state (AirPods vs speaker) rather

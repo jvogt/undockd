@@ -29,18 +29,20 @@
   development, but `zoom_muted` / `zoom_unmuted` weren't observed on the
   physical light (no meeting). Also verify the light resets when undocking.
 - [ ] **Undock transition**: I never unplugged the hub. Unplug/replug and
-  confirm: profile switches to Undocked, on-air watcher stops, and back.
+  confirm: scene collection switches to Undocked, on-air watcher stops, and back.
 - [ ] **Quick Keys key/wheel events**: `set-color`, `set-text`, battery, and
   connect events verified live against the wireless dongle; physical key
   presses and wheel turns were not (nobody to press them). With the on-air
-  daemon running: key 0 should show Muted/Unmuted in a meeting (blank
-  otherwise) and toggle mute; key 1 should show "Out: Sys"/"Out:Pods" and
-  toggle output. Also unknown: which bitmask bit (8 or 9) is the wheel
-  click, and the wired (PID 0x5202) code path.
+  daemon running: key 0 shows Muted/Unmuted in a meeting (blank otherwise)
+  and toggles mute; key 1 shows "Out: <label>" and cycles the output
+  allow-list; key 2 shows "In: <label>" and cycles inputs. The cycle logic
+  itself is verified (`dockd-audio cycle output|input` switched real
+  devices), but not via a physical key press. Also unknown: which bitmask
+  bit (8 or 9) is the wheel click, and the wired (PID 0x5202) code path.
 - [ ] **Quick Keys display details**: verify that setting an empty label
   actually blanks a key (used to clear all keys on connect) and that the
-  temporary "No AirPods" overlay renders; if empty text doesn't clear, try
-  a single space.
+  temporary "No Output Choices" / "No Input Choices" overlays render; if
+  empty text doesn't clear, try a single space.
 - [ ] **Input pinning**: with AirPods, activate them as output and confirm
   the default input stays on the previous mic (`audio.keep_input`, watches
   for the macOS input hijack for ~4s after the switch).

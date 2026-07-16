@@ -5,6 +5,7 @@ Examples:
     dockd-audio get output
     dockd-audio get input
     dockd-audio set output "MacBook Pro Speakers"
+    dockd-audio cycle output          # next device in audio.output_cycle
     dockd-audio airpods status
     dockd-audio airpods connect|activate|deactivate|toggle
 """
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 
-from .. import airpods, config as cfg, coreaudio
+from .. import airpods, audiocycle, config as cfg, coreaudio
 from ..cliutil import emit, fail
 from ..log import get_logger
 
@@ -38,6 +39,16 @@ def main(argv: list[str] | None = None) -> None:
         "action",
         choices=["status", "connect", "activate", "deactivate", "toggle"],
     )
+    p_air.add_argument(
+        "--fast",
+        action="store_true",
+        help="status only: skip the blueutil availability check (CoreAudio only)",
+    )
+
+    p_cycle = sub.add_parser(
+        "cycle", help="switch to the next allow-listed device (audio.*_cycle)"
+    )
+    p_cycle.add_argument("direction", choices=["input", "output"])
 
     args = parser.parse_args(argv)
     config = cfg.load()
@@ -55,12 +66,19 @@ def main(argv: list[str] | None = None) -> None:
             coreaudio.set_default(args.direction, device)
             log.info("default %s set to %s", args.direction, device.name)
             emit({"ok": True, "device": device.as_dict()})
+        elif args.cmd == "cycle":
+            try:
+                result = audiocycle.cycle(config, args.direction)
+            except audiocycle.NoChoicesError as exc:
+                raise fail(str(exc), no_choices=True)
+            log.info("cycled %s to %s", args.direction, (result["device"] or {}).get("name"))
+            emit({"ok": True, **result})
         elif args.cmd == "airpods":
             match = cfg.get(config, "audio.airpods_match", "AirPods")
             fallback = cfg.get(config, "audio.fallback_output")
             keep_input = bool(cfg.get(config, "audio.keep_input", True))
             if args.action == "status":
-                emit({"ok": True, **airpods.status(match)})
+                emit({"ok": True, **airpods.status(match, include_bluetooth=not args.fast)})
             elif args.action == "connect":
                 emit({"ok": True, **airpods.connect(match)})
             elif args.action == "activate":

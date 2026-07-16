@@ -23,6 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.statusItem.button?.toolTip = StatusIcon.tooltip(for: state)
         }
         model.start()
+        NotificationCenter.default.addObserver(
+            forName: .dockdConfigChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Self.log.info("config changed; restarting daemons")
+            self?.model.restartDaemons()
+            self?.model.poll()
+        }
         Self.log.info("Dockd started; tools at \(ToolRunner.binDir()?.path ?? "NOT FOUND", privacy: .public)")
         // Debug hook: DOCKD_OPEN_SETTINGS=1 opens the settings window on launch.
         if ProcessInfo.processInfo.environment["DOCKD_OPEN_SETTINGS"] == "1" {
@@ -86,8 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if state.obsRunning {
             statusLine(state.virtualcamActive ? "OBS virtual camera on" : "OBS virtual camera off")
-            if let profile = state.currentProfile {
-                statusLine("OBS profile: \(profile)")
+            if let collection = state.currentSceneCollection {
+                statusLine("OBS scene collection: \(collection)")
             }
         } else {
             statusLine("OBS not running")

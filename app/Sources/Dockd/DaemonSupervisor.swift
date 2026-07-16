@@ -33,6 +33,19 @@ final class DaemonSupervisor {
         process.terminate()
     }
 
+    /// Terminate the child; the termination handler relaunches it (used to
+    /// pick up config changes).
+    func restart() {
+        guard desired else { return }
+        if let process, process.isRunning {
+            log.info("restarting \(self.name, privacy: .public)")
+            restartDelay = 1
+            process.terminate()
+        } else {
+            launchIfNeeded()
+        }
+    }
+
     private func launchIfNeeded() {
         guard desired, !(process?.isRunning ?? false) else { return }
         guard let url = ToolRunner.toolURL(tool) else {

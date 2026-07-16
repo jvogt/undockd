@@ -11,7 +11,7 @@ uv run <tool>    # or .venv/bin/<tool>
 
 | Tool | Purpose |
 | --- | --- |
-| `dockd-obs` | OBS profiles + virtual camera over obs-websocket (`status`, `profiles`, `profile get/set [--slot docked\|undocked]`, `virtualcam status/start/stop/toggle`, `ensure-running`). The websocket password is auto-discovered from OBS's own config when unset. |
+| `dockd-obs` | OBS scene collections + virtual camera over obs-websocket (`status`, `scene-collections`, `scene-collection get/set [--slot docked\|undocked]`, `virtualcam status/start/stop/toggle`, `ensure-running`). The websocket password is auto-discovered from OBS's own config when unset. |
 | `dockd-audio` | Audio devices via CoreAudio ctypes (`list`, `get/set input\|output`) and AirPods via blueutil (`airpods status/connect/activate/deactivate/toggle`). |
 | `dockd-dock` | Docked/undocked: matches `dock.match` against Thunderbolt devices (`status`, `devices`). |
 | `dockd-idle` | Seconds since last input (HIDIdleTime) + screensaver timeout. |

@@ -2,25 +2,23 @@ import AppKit
 
 /// Renders the menubar icon for the current state.
 ///
-/// - AirPods available but not active output: outlined (dimmed) airpods
-/// - AirPods active output: solid airpods
 /// - AirPods active output AND input: airpods with a mic badge
-/// - AirPods not available: speaker
+/// - AirPods active output: airpods
+/// - AirPods available but output is elsewhere: speaker
+/// - AirPods not available: dim speaker (click opens the menu)
 /// A small red dot is overlaid when on air.
 enum StatusIcon {
     static func image(for state: DockdState) -> NSImage {
         let base: NSImage
         let available = state.airpodsAvailable ?? state.airpodsConnected
-        if available {
-            if state.airpodsActiveOutput && state.airpodsActiveInput {
-                base = composite(symbol: "airpods", badge: "mic.fill", alpha: 1.0)
-            } else if state.airpodsActiveOutput {
-                base = symbolImage("airpods", alpha: 1.0, weight: .bold)
-            } else {
-                base = symbolImage("airpods", alpha: 0.35, weight: .light)
-            }
-        } else {
+        if state.airpodsActiveOutput && state.airpodsActiveInput {
+            base = composite(symbol: "airpods", badge: "mic.fill", alpha: 1.0)
+        } else if state.airpodsActiveOutput {
+            base = symbolImage("airpods", alpha: 1.0)
+        } else if available {
             base = symbolImage("speaker.wave.2", alpha: 1.0)
+        } else {
+            base = symbolImage("speaker.wave.2", alpha: 0.35, weight: .light)
         }
         if state.onAir {
             return composite(base: base, dotColor: .systemRed)
@@ -36,9 +34,9 @@ enum StatusIcon {
                 ? "AirPods: output + input (click to switch away)"
                 : "AirPods: active output (click to switch away)")
         } else if available {
-            parts.append("AirPods available (click to use)")
+            parts.append("System output — AirPods available (click to use)")
         } else {
-            parts.append("System output (no AirPods)")
+            parts.append("System output, no AirPods (click for menu)")
         }
         if state.onAir { parts.append("ON AIR") }
         return parts.joined(separator: " — ")

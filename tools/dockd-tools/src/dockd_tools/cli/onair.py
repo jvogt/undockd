@@ -13,6 +13,8 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import signal
 import time
 
@@ -57,7 +59,12 @@ def run(config: dict) -> None:
         except HomeAssistantError as exc:
             log.warning("could not reset on-air light: %s", exc)
         heartbeat.clear()
-        raise SystemExit(0)
+        # Exit without running Python's atexit handlers: cython-hidapi
+        # registers hid_exit there, and its IOHIDManager teardown crashes
+        # ("Python quit unexpectedly") once HID was used from a worker
+        # thread whose run loop is gone. All our cleanup already happened.
+        logging.shutdown()
+        os._exit(0)
 
     signal.signal(signal.SIGTERM, reset)
     signal.signal(signal.SIGINT, reset)
@@ -88,6 +95,7 @@ def run(config: dict) -> None:
             on_air=state["state"] == "unmuted",
             ha_ok=ha_ok,
             quickkeys_connected=quickkeys.connected,
+            obs_scene_collection=quickkeys.obs_scene_collection,
         )
         time.sleep(interval)
 

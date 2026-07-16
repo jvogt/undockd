@@ -7,7 +7,7 @@ def test_defaults_when_missing_file(tmp_path, monkeypatch):
     monkeypatch.setenv("DOCKD_CONFIG", str(tmp_path / "nope.json"))
     config = cfg.load()
     assert config["obs"]["port"] == 4455
-    assert cfg.get(config, "obs.profiles.docked") == "Docked"
+    assert cfg.get(config, "obs.scene_collections.docked") == "Docked"
 
 
 def test_user_overrides_merge_deeply(tmp_path, monkeypatch):

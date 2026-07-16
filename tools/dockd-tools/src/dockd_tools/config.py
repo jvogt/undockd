@@ -25,7 +25,7 @@ DEFAULTS: dict[str, Any] = {
         # null → auto-discover from OBS's own obs-websocket config.json
         "password": None,
         "app_name": "OBS",
-        "profiles": {
+        "scene_collections": {
             "docked": "Docked",
             "undocked": "Undocked",
         },
@@ -43,6 +43,17 @@ DEFAULTS: dict[str, Any] = {
         # Keep the current default input device when AirPods become the
         # output (macOS likes to switch input to the AirPods mic too)
         "keep_input": True,
+        # Allow-lists the Quick Keys Out:/In: buttons cycle through.
+        # "match" is a device UID, exact name, or name substring; "label"
+        # is the short name shown on the key (~4-5 chars fit).
+        "output_cycle": [
+            {"match": "AirPods", "label": "Pods"},
+            {"match": "MacBook Pro Speakers", "label": "Sys"},
+        ],
+        "input_cycle": [
+            {"match": "MacBook Pro Microphone", "label": "Sys"},
+            {"match": "AirPods", "label": "Pods"},
+        ],
     },
     "onair": {
         "poll_interval": 0.5,
@@ -75,11 +86,17 @@ DEFAULTS: dict[str, Any] = {
         "offair_color": [0, 255, 0],
         "idle_color": [0, 0, 32],
         # Key index -> role. toggle_mute shows Muted/Unmuted while in a
-        # meeting (blank otherwise); toggle_airpods shows Out: Sys/Out:Pods.
-        # All other keys are cleared. Labels are managed dynamically.
+        # meeting (blank otherwise); cycle_output / cycle_input show
+        # "Out: X" / "In: X" and cycle through the audio.output_cycle /
+        # audio.input_cycle allow-lists; toggle_obs_scene_collection shows
+        # the current OBS scene collection (8-char limit) and flips between
+        # the docked/undocked mapped collections. All other keys are cleared.
+        # Labels are managed dynamically.
         "buttons": {
             "0": "toggle_mute",
-            "1": "toggle_airpods",
+            "1": "cycle_output",
+            "2": "cycle_input",
+            "3": "toggle_obs_scene_collection",
         },
     },
 }

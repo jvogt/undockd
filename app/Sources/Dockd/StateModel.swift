@@ -9,7 +9,7 @@ struct DockdState: Equatable {
     var airpodsActiveInput = false
     var obsRunning = false
     var virtualcamActive = false
-    var currentProfile: String?
+    var currentSceneCollection: String?
     var onAir = false
     var inMeeting = false
     var onairHealthy = false
@@ -32,11 +32,17 @@ final class StateModel {
     private var polling = false
     private var repollRequested = false
     private var pollCount = 0
-    /// Dock state the OBS-profile automation last acted on.
+    private var audioPolling = false
+    private var audioWatcher: AudioDeviceWatcher?
+    /// Dock state the OBS scene-collection automation last acted on.
     private var appliedDockState: Bool?
 
     func start() {
         camSleep.start()
+        // React to device swaps instantly instead of waiting for the timer.
+        audioWatcher = AudioDeviceWatcher { [weak self] in
+            self?.pollAudio()
+        }
         poll()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.poll()
@@ -56,8 +62,11 @@ final class StateModel {
         }
         polling = true
         pollCount += 1
-        // system_profiler is slow; check the dock every 4th cycle (~12s)
+        // system_profiler is slow; check the dock every 4th cycle (~12s).
         let checkDock = pollCount % 4 == 1
+        // blueutil can stall for seconds; do the full availability check
+        // every 4th cycle too, and a CoreAudio-only fast check otherwise.
+        let fullAirpods = pollCount % 4 == 2 || pollCount == 1
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             // Start from the previous state so one failed tool doesn't
@@ -67,19 +76,15 @@ final class StateModel {
             if checkDock, let dock = ToolRunner.run("dockd-dock", ["status"], timeout: 40) {
                 next.docked = dock["docked"] as? Bool
             }
-            if let pods = ToolRunner.run("dockd-audio", ["airpods", "status"]) {
-                next.airpodsAvailable = pods["available"] as? Bool
-                next.airpodsConnected = pods["connected"] as? Bool ?? false
-                next.airpodsActiveOutput = pods["active_output"] as? Bool ?? false
-                next.airpodsActiveInput = pods["active_input"] as? Bool ?? false
-                if next.airpodsAvailable == nil && next.airpodsConnected {
-                    next.airpodsAvailable = true
-                }
+            let airpodsArgs = fullAirpods
+                ? ["airpods", "status"] : ["airpods", "status", "--fast"]
+            if let pods = ToolRunner.run("dockd-audio", airpodsArgs) {
+                Self.merge(airpods: pods, into: &next, fullCheck: fullAirpods)
             }
             if let obs = ToolRunner.run("dockd-obs", ["status"]) {
                 next.obsRunning = obs["running"] as? Bool ?? false
                 next.virtualcamActive = obs["virtualcam_active"] as? Bool ?? false
-                next.currentProfile = obs["current"] as? String
+                next.currentSceneCollection = obs["current_scene_collection"] as? String
             }
             if let onairStatus = ToolRunner.run("dockd-onair", ["status"]) {
                 next.onairHealthy = onairStatus["healthy"] as? Bool ?? false
@@ -106,8 +111,45 @@ final class StateModel {
         }
     }
 
-    /// README behavior: docked → mapped "Docked" profile + on-air watch on;
-    /// undocked → mapped "Undocked" profile + on-air watch off. OBS is
+    /// Merge a `dockd-audio airpods status` payload into the state. On fast
+    /// (CoreAudio-only) checks, `available` is unknown — keep the last full
+    /// reading, but let a connected device imply availability.
+    private static func merge(airpods pods: [String: Any], into next: inout DockdState, fullCheck: Bool) {
+        if fullCheck, let available = pods["available"] as? Bool {
+            next.airpodsAvailable = available
+        }
+        next.airpodsConnected = pods["connected"] as? Bool ?? false
+        next.airpodsActiveOutput = pods["active_output"] as? Bool ?? false
+        next.airpodsActiveInput = pods["active_input"] as? Bool ?? false
+        if next.airpodsConnected {
+            next.airpodsAvailable = true
+        }
+    }
+
+    /// Fast, audio-only refresh triggered by CoreAudio device notifications.
+    func pollAudio() {
+        guard !audioPolling else { return }
+        audioPolling = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let pods = ToolRunner.run("dockd-audio", ["airpods", "status", "--fast"], timeout: 10)
+            DispatchQueue.main.async {
+                self.audioPolling = false
+                guard let pods else { return }
+                var next = self.state
+                Self.merge(airpods: pods, into: &next, fullCheck: false)
+                if next != self.state {
+                    Self.log.info("audio device change applied to state")
+                    self.state = next
+                    self.onChange?(next)
+                }
+            }
+        }
+    }
+
+    /// README behavior: docked → mapped "Docked" scene collection + on-air
+    /// watch on; undocked → mapped "Undocked" scene collection + on-air watch
+    /// off. OBS is
     /// started if it should be running but isn't.
     private func applyAutomations(current: DockdState) {
         guard let docked = current.docked else { return }
@@ -122,12 +164,12 @@ final class StateModel {
         appliedDockState = docked
 
         let slot = docked ? "docked" : "undocked"
-        Self.log.info("dock state: \(docked ? "docked" : "undocked", privacy: .public); applying profile slot \(slot, privacy: .public)")
+        Self.log.info("dock state: \(docked ? "docked" : "undocked", privacy: .public); applying scene-collection slot \(slot, privacy: .public)")
         DispatchQueue.global(qos: .userInitiated).async {
             if !current.obsRunning {
                 ToolRunner.run("dockd-obs", ["ensure-running"], timeout: 30)
             }
-            ToolRunner.run("dockd-obs", ["profile", "set", "--slot", slot])
+            ToolRunner.run("dockd-obs", ["scene-collection", "set", "--slot", slot])
             DispatchQueue.main.async { self.poll() }
         }
     }
@@ -157,5 +199,11 @@ final class StateModel {
 
     func toggleVirtualcam() {
         ToolRunner.runAsync("dockd-obs", ["virtualcam", "toggle"]) { _ in self.poll() }
+    }
+
+    /// Bounce the daemons so they pick up config changes.
+    func restartDaemons() {
+        camSleep.restart()
+        onair.restart()
     }
 }

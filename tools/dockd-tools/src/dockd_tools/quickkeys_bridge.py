@@ -1,19 +1,31 @@
 """Bridge between the on-air watcher and a Xencelabs Quick Keys device.
 
-Runs a background thread that keeps a device open (reconnecting as needed).
-On connect it clears every key label, then drives exactly two keys:
+Keeps a device open (reconnecting as needed), clears every key label on
+connect, then drives up to three keys (roles assigned in
+``quickkeys.buttons``):
 
-- mute key (``quickkeys.buttons`` role ``toggle_mute``): shows "Muted" /
-  "Unmuted" while a Zoom/Meet meeting is in session (empty otherwise);
-  pressing it toggles the meeting mute. External mute changes flow back in
-  via :meth:`set_meeting_state` from the on-air poll loop.
-- output key (role ``toggle_airpods``): shows "Out: Sys" or "Out:Pods".
-  Pressing it switches the system output to AirPods (or back). If no
-  AirPods are available it briefly overlays "No AirPods" and stays on
-  "Out: Sys".
+- ``toggle_mute``: "Muted"/"Unmuted" while a Zoom/Meet meeting is in session
+  (blank otherwise); pressing toggles the meeting mute. External mute changes
+  flow back in via :meth:`set_meeting_state`.
+- ``cycle_output``: "Out: <label>" for the current default output; pressing
+  cycles through the ``audio.output_cycle`` allow-list. Fewer than two
+  present choices → flashes "No Output Choices".
+- ``cycle_input``: "In: <label>" for the current default input; cycles
+  ``audio.input_cycle``; flashes "No Input Choices" when there is nothing to
+  cycle to.
+- ``toggle_obs_scene_collection``: shows the current OBS scene collection
+  name (8-char key limit, so "Docked"/"Undocked" rather than "OBS: Docked")
+  and flips between the scene collections mapped to the docked/undocked
+  slots. "No OBS" when OBS is unreachable.
 
-The wheel ring mirrors on-air state (unmuted/muted/idle colors). Everything
-is best-effort: no hardware attached simply means the bridge stays dormant.
+The wheel ring mirrors on-air state (unmuted/muted/idle colors). On daemon
+shutdown (e.g. undocking stops the on-air watcher) every key label and the
+wheel color are cleared so the pad goes dark.
+
+Threading: the pump thread only does fast HID polling and label sync; a
+separate refresher thread owns the slow calls (blueutil, CoreAudio device
+walks) and publishes a snapshot, so button presses react instantly from
+cached state instead of waiting on Bluetooth.
 """
 
 from __future__ import annotations
@@ -23,16 +35,25 @@ import threading
 import time
 from typing import Any
 
-from . import airpods, config as cfg, meeting
+from . import audiocycle, config as cfg, coreaudio, meeting
+from .obs import Obs
 
 TEXT_MUTED = "Muted"
 TEXT_UNMUTED = "Unmuted"
 TEXT_MUTE_UNKNOWN = "Mute ?"
-TEXT_OUT_SYS = "Out: Sys"
-TEXT_OUT_PODS = "Out:Pods"  # key labels are limited to 8 characters
-OVERLAY_NO_AIRPODS = "No AirPods"
+TEXT_NO_OBS = "No OBS"
+OVERLAY_NO_OUTPUTS = "No Output Choices"
+OVERLAY_NO_INPUTS = "No Input Choices"
 
-AIRPODS_REFRESH_SECONDS = 5
+REFRESH_SECONDS = 3
+
+
+def _key_label(prefix: str, label: str) -> str:
+    """Fit "Out: Sys" style text into the 8-char hardware limit."""
+    text = f"{prefix} {label}"
+    if len(text) > 8:
+        text = f"{prefix}{label}"[:8]
+    return text
 
 
 class QuickKeysBridge:
@@ -41,17 +62,23 @@ class QuickKeysBridge:
         self.log = log
         self.enabled = bool(cfg.get(config, "quickkeys.enabled", True))
         buttons = cfg.get(config, "quickkeys.buttons", {}) or {}
-        # role -> key index (e.g. {"toggle_mute": 0, "toggle_airpods": 1})
-        self._keys = {str(v): int(k) for k, v in buttons.items()}
-        self._actions = {int(k): str(v) for k, v in buttons.items()}
+        self._keys = {str(v): int(k) for k, v in buttons.items()}   # role -> key
+        self._actions = {int(k): str(v) for k, v in buttons.items()}  # key -> role
         self._lock = threading.Lock()
+        self._dev_lock = threading.Lock()
         self._meeting: dict[str, Any] = {"app": None, "state": "none", "in_meeting": False}
+        # Snapshot maintained by the refresher thread
         self._airpods: dict[str, Any] | None = None
-        self._airpods_ts = 0.0
+        self._default_output: coreaudio.AudioDevice | None = None
+        self._default_input: coreaudio.AudioDevice | None = None
+        self._obs_scene_collection: str | None = None
+        self._obs: Obs | None = None  # refresher-thread only
         self._applied: dict[Any, Any] = {}
         self._device = None
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._kick = threading.Event()  # wake the refresher early
+        self._pump_thread: threading.Thread | None = None
+        self._refresh_thread: threading.Thread | None = None
         self._action_thread: threading.Thread | None = None
 
     # -- public API ----------------------------------------------------------
@@ -59,11 +86,35 @@ class QuickKeysBridge:
     def start(self) -> None:
         if not self.enabled:
             return
-        self._thread = threading.Thread(target=self._run, name="quickkeys", daemon=True)
-        self._thread.start()
+        self._refresh_thread = threading.Thread(
+            target=self._refresher, name="quickkeys-refresh", daemon=True
+        )
+        self._refresh_thread.start()
+        self._pump_thread = threading.Thread(target=self._run, name="quickkeys", daemon=True)
+        self._pump_thread.start()
 
     def stop(self) -> None:
+        """Orderly shutdown: stop the threads, blank the pad, close the device.
+
+        The device MUST be closed with no read in flight before the
+        interpreter exits — hidapi's atexit teardown (IOHIDManagerClose)
+        crashes the process otherwise ("Python quit unexpectedly").
+        """
         self._stop.set()
+        self._kick.set()
+        for thread in (self._pump_thread, self._refresh_thread):
+            if thread and thread.is_alive():
+                thread.join(timeout=3)
+        device = self._device
+        self._device = None
+        if device is not None:
+            try:
+                for key in range(8):
+                    device.set_key_text(key, "")
+                device.set_wheel_color(0, 0, 0)
+            except Exception as exc:
+                self.log.debug("could not blank quickkeys on stop: %s", exc)
+            device.close()
 
     def set_meeting_state(self, state: dict[str, Any]) -> None:
         """Called from the on-air loop on every poll (0.5s cadence)."""
@@ -74,7 +125,59 @@ class QuickKeysBridge:
     def connected(self) -> bool:
         return self._device is not None
 
-    # -- worker --------------------------------------------------------------
+    # -- refresher thread (owns all slow status calls) -------------------------
+
+    def _refresher(self) -> None:
+        from . import airpods
+
+        match = cfg.get(self.config, "audio.airpods_match", "AirPods")
+        while not self._stop.is_set():
+            pods: dict[str, Any] | None
+            try:
+                pods = airpods.status(match)
+            except Exception as exc:
+                self.log.debug("airpods status failed: %s", exc)
+                pods = None
+            try:
+                out_dev = coreaudio.get_default("output")
+                in_dev = coreaudio.get_default("input")
+            except Exception as exc:
+                self.log.debug("coreaudio defaults failed: %s", exc)
+                out_dev = in_dev = None
+            collection: str | None = None
+            if self._keys.get("toggle_obs_scene_collection") is not None:
+                try:
+                    if self._obs is None:
+                        self._obs = Obs(self.config, timeout=2)
+                    collection = self._obs.scene_collections()["current_scene_collection"]
+                except Exception:
+                    if self._obs is not None:
+                        self._obs.close()
+                        self._obs = None
+            with self._lock:
+                self._airpods = pods
+                self._default_output = out_dev
+                self._default_input = in_dev
+                self._obs_scene_collection = collection
+            self._kick.wait(REFRESH_SECONDS)
+            self._kick.clear()
+
+    def _snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "meeting": dict(self._meeting),
+                "airpods": dict(self._airpods) if self._airpods else None,
+                "output": self._default_output,
+                "input": self._default_input,
+                "obs_scene_collection": self._obs_scene_collection,
+            }
+
+    @property
+    def obs_scene_collection(self) -> str | None:
+        with self._lock:
+            return self._obs_scene_collection
+
+    # -- device pump -----------------------------------------------------------
 
     def _run(self) -> None:
         from .quickkeys.device import QuickKeysDevice, QuickKeysError
@@ -96,45 +199,38 @@ class QuickKeysBridge:
             except QuickKeysError as exc:
                 self.log.warning("quickkeys disconnected: %s", exc)
             finally:
-                self._device = None
                 self._applied = {}
-                device.close()
+                # On shutdown, stop() blanks the pad and closes the device;
+                # close here only on the error/disconnect path.
+                if not self._stop.is_set():
+                    self._device = None
+                    device.close()
 
     def _reset_keys(self, device) -> None:
         """Clear all 8 key labels so only the keys we drive show anything."""
-        for key in range(8):
-            try:
-                device.set_key_text(key, "")
-            except Exception as exc:
-                self.log.debug("could not clear key %s: %s", key, exc)
-                return
+        with self._dev_lock:
+            for key in range(8):
+                try:
+                    device.set_key_text(key, "")
+                except Exception as exc:
+                    self.log.debug("could not clear key %s: %s", key, exc)
+                    return
         self._applied = {}
 
     def _pump(self, device) -> None:
         while not self._stop.is_set():
-            for event in device.poll_events(timeout_ms=250):
+            # All device I/O is serialized: overlay/blank writes from other
+            # threads must never interleave with a blocking read.
+            with self._dev_lock:
+                events = device.poll_events(timeout_ms=250)
+            for event in events:
                 if event["type"] == "key" and event["down"]:
                     self._handle_key(device, event["key"])
                 elif event["type"] == "connected":
                     self._reset_keys(device)
-            self._refresh_airpods()
             self._sync(device)
 
-    # -- airpods snapshot ------------------------------------------------------
-
-    def _refresh_airpods(self, force: bool = False) -> None:
-        now = time.monotonic()
-        if not force and now - self._airpods_ts < AIRPODS_REFRESH_SECONDS:
-            return
-        self._airpods_ts = now
-        match = cfg.get(self.config, "audio.airpods_match", "AirPods")
-        try:
-            self._airpods = airpods.status(match)
-        except Exception as exc:
-            self.log.debug("airpods status failed: %s", exc)
-            self._airpods = None
-
-    # -- key handling ----------------------------------------------------------
+    # -- key handling ------------------------------------------------------------
 
     def _handle_key(self, device, key: int) -> None:
         action = self._actions.get(key)
@@ -144,8 +240,12 @@ class QuickKeysBridge:
             return  # ignore presses while an action is in flight
         if action == "toggle_mute":
             target = self._do_toggle_mute
-        elif action == "toggle_airpods":
-            target = lambda: self._do_toggle_airpods(device)  # noqa: E731
+        elif action == "cycle_output":
+            target = lambda: self._do_cycle(device, "output")  # noqa: E731
+        elif action == "cycle_input":
+            target = lambda: self._do_cycle(device, "input")  # noqa: E731
+        elif action == "toggle_obs_scene_collection":
+            target = lambda: self._do_toggle_obs_scene_collection(device)  # noqa: E731
         else:
             self.log.warning("unknown quickkeys action: %s", action)
             return
@@ -168,40 +268,61 @@ class QuickKeysBridge:
         # Instant feedback; the on-air loop re-detects within 0.5s anyway.
         self.set_meeting_state(result)
 
-    def _do_toggle_airpods(self, device) -> None:
-        match = cfg.get(self.config, "audio.airpods_match", "AirPods")
-        fallback = cfg.get(self.config, "audio.fallback_output")
-        self._refresh_airpods(force=True)
-        status = self._airpods or {}
-        if not (status.get("available") or status.get("connected")):
-            self.log.info("output key pressed but no AirPods available")
-            try:
-                device.show_overlay_text(2, OVERLAY_NO_AIRPODS)
-            except Exception:
-                pass
-            return
+    def _overlay(self, device, text: str) -> None:
         try:
-            keep_input = bool(cfg.get(self.config, "audio.keep_input", True))
-            if status.get("active_output"):
-                result = airpods.deactivate(match, fallback)
-            else:
-                result = airpods.activate(match, keep_input=keep_input)
-            self.log.info("toggle_airpods -> active_output=%s", result["active_output"])
-            self._airpods = result
-            self._airpods_ts = time.monotonic()
+            with self._dev_lock:
+                device.show_overlay_text(2, text)
         except Exception as exc:
-            self.log.warning("airpods toggle failed: %s", exc)
-            try:
-                device.show_overlay_text(2, OVERLAY_NO_AIRPODS)
-            except Exception:
-                pass
+            self.log.debug("overlay failed: %s", exc)
 
-    # -- hardware sync ---------------------------------------------------------
+    def _do_toggle_obs_scene_collection(self, device) -> None:
+        docked = str(cfg.get(self.config, "obs.scene_collections.docked", "Docked"))
+        undocked = str(cfg.get(self.config, "obs.scene_collections.undocked", "Undocked"))
+        with self._lock:
+            current = self._obs_scene_collection
+        target = undocked if current == docked else docked
+        # Fresh connection: the refresher thread owns the shared client.
+        obs = Obs(self.config, timeout=3)
+        try:
+            obs.set_scene_collection(target)
+            self.log.info("toggle_obs_scene_collection -> %s", target)
+            with self._lock:
+                self._obs_scene_collection = target
+            self._kick.set()
+        except Exception as exc:
+            self.log.warning("obs scene collection toggle failed: %s", exc)
+            self._overlay(device, TEXT_NO_OBS)
+        finally:
+            obs.close()
+
+    def _do_cycle(self, device, direction: str) -> None:
+        snapshot = self._snapshot()
+        no_choices = OVERLAY_NO_OUTPUTS if direction == "output" else OVERLAY_NO_INPUTS
+        try:
+            result = audiocycle.cycle(
+                self.config, direction, airpods_status=snapshot["airpods"]
+            )
+            self.log.info("cycle_%s -> %s", direction, result["device"]["name"] if result["device"] else "?")
+            # Publish the new default immediately so the label flips now.
+            device_obj = coreaudio.get_default(direction)
+            with self._lock:
+                if direction == "output":
+                    self._default_output = device_obj
+                else:
+                    self._default_input = device_obj
+            self._kick.set()
+        except audiocycle.NoChoicesError:
+            self.log.info("cycle_%s: %s", direction, no_choices)
+            self._overlay(device, no_choices)
+        except Exception as exc:
+            self.log.warning("cycle_%s failed: %s", direction, exc)
+            self._overlay(device, no_choices)
+
+    # -- hardware sync -------------------------------------------------------------
 
     def _sync(self, device) -> None:
-        with self._lock:
-            m = dict(self._meeting)
-
+        snapshot = self._snapshot()
+        m = snapshot["meeting"]
         desired: dict[Any, Any] = {}
 
         mute_key = self._keys.get("toggle_mute")
@@ -214,12 +335,21 @@ class QuickKeysBridge:
             else:
                 desired[("text", mute_key)] = ""
 
-        out_key = self._keys.get("toggle_airpods")
+        out_key = self._keys.get("cycle_output")
         if out_key is not None:
-            pods = self._airpods or {}
-            desired[("text", out_key)] = (
-                TEXT_OUT_PODS if pods.get("active_output") else TEXT_OUT_SYS
-            )
+            label = audiocycle.label_for(self.config, "output", snapshot["output"])
+            desired[("text", out_key)] = _key_label("Out:", label)
+
+        in_key = self._keys.get("cycle_input")
+        if in_key is not None:
+            label = audiocycle.label_for(self.config, "input", snapshot["input"])
+            desired[("text", in_key)] = _key_label("In:", label)
+
+        obs_key = self._keys.get("toggle_obs_scene_collection")
+        if obs_key is not None:
+            collection = snapshot["obs_scene_collection"]
+            # 8-char key limit: "OBS: Docked" can't fit — show the collection name
+            desired[("text", obs_key)] = collection[:8] if collection else TEXT_NO_OBS
 
         color_key = {"unmuted": "onair_color", "muted": "offair_color"}.get(
             m.get("state"), "idle_color"
@@ -230,8 +360,9 @@ class QuickKeysBridge:
         for item, value in desired.items():
             if self._applied.get(item) == value:
                 continue
-            if item == "color":
-                device.set_wheel_color(*value)
-            else:
-                device.set_key_text(item[1], value)
+            with self._dev_lock:
+                if item == "color":
+                    device.set_wheel_color(*value)
+                else:
+                    device.set_key_text(item[1], value)
             self._applied[item] = value

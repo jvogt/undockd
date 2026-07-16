@@ -103,18 +103,24 @@ class Obs:
                 pass
             self._client = None
 
-    # -- profiles ----------------------------------------------------------
+    # -- scene collections ---------------------------------------------------
 
-    def profiles(self) -> dict[str, Any]:
-        resp = self.client.get_profile_list()
-        return {"current": resp.current_profile_name, "profiles": resp.profiles}
+    def scene_collections(self) -> dict[str, Any]:
+        resp = self.client.get_scene_collection_list()
+        return {
+            "current_scene_collection": resp.current_scene_collection_name,
+            "scene_collections": resp.scene_collections,
+        }
 
-    def set_profile(self, name: str) -> None:
-        current = self.profiles()
-        if name not in current["profiles"]:
-            raise ObsError(f"no such OBS profile: {name!r} (have: {current['profiles']})")
-        if current["current"] != name:
-            self.client.set_current_profile(name)
+    def set_scene_collection(self, name: str) -> None:
+        current = self.scene_collections()
+        if name not in current["scene_collections"]:
+            raise ObsError(
+                f"no such OBS scene collection: {name!r} "
+                f"(have: {current['scene_collections']})"
+            )
+        if current["current_scene_collection"] != name:
+            self.client.set_current_scene_collection(name)
 
     # -- virtual camera ----------------------------------------------------
 

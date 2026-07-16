@@ -54,24 +54,28 @@ def _audio_device(match: str, direction: str) -> coreaudio.AudioDevice | None:
     return coreaudio.find_device(match, direction)
 
 
-def status(match: str) -> dict[str, Any]:
+def status(match: str, include_bluetooth: bool = True) -> dict[str, Any]:
+    """AirPods state. ``include_bluetooth=False`` skips the (slow) blueutil
+    availability check and reports only what CoreAudio can tell — connected
+    and active states — in a few hundred milliseconds."""
     result: dict[str, Any] = {
         "match": match,
-        "available": None,  # unknown when bluetooth is unreadable
+        "available": None,  # unknown when bluetooth is unreadable/skipped
         "connected": False,
         "active_output": False,
         "active_input": False,
         "bluetooth_error": None,
     }
-    try:
-        paired = paired_airpods(match)
-        result["available"] = paired is not None
-        if paired:
-            result["address"] = paired.get("address")
-            result["name"] = paired.get("name")
-            result["connected"] = bool(paired.get("connected"))
-    except (BluetoothUnavailable, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-        result["bluetooth_error"] = str(exc)
+    if include_bluetooth:
+        try:
+            paired = paired_airpods(match)
+            result["available"] = paired is not None
+            if paired:
+                result["address"] = paired.get("address")
+                result["name"] = paired.get("name")
+                result["connected"] = bool(paired.get("connected"))
+        except (BluetoothUnavailable, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            result["bluetooth_error"] = str(exc)
 
     output_device = _audio_device(match, "output")
     if output_device:

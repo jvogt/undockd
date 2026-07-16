@@ -14,9 +14,16 @@ from .config import STATE_DIR
 
 def emit(payload: dict[str, Any]) -> None:
     """Print a JSON object to stdout — the only thing CLIs write to stdout."""
-    json.dump(payload, sys.stdout)
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    try:
+        json.dump(payload, sys.stdout)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # Downstream consumer (| head, closed pipe) went away — not an error.
+        try:
+            sys.stdout.close()
+        except BrokenPipeError:
+            pass
 
 
 def fail(message: str, *, code: int = 1, **extra: Any) -> "SystemExit":
