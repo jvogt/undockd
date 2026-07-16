@@ -8,8 +8,10 @@ struct ToolRunner {
     /// Directory containing the dockd-* entry points. Resolution order:
     /// 1. DOCKD_TOOLS_BIN env var
     /// 2. config key tools.bin_dir
-    /// 3. <repo>/tools/dockd-tools/.venv/bin next to the app source tree
-    /// 4. Dockd.app/Contents/Resources/tools-bin (if bundled)
+    /// 3. the bundled frozen tools inside
+    ///    Dockd.app/Contents/Resources/dockd-tools.app/Contents/MacOS
+    ///    (a PyInstaller app carrying the Bluetooth usage string; the dockd-*
+    ///    names are symlinks to the shared `dockd` executable)
     static func binDir() -> URL? {
         let fm = FileManager.default
         var candidates: [URL] = []
@@ -20,7 +22,7 @@ struct ToolRunner {
             candidates.append(URL(fileURLWithPath: (configured as NSString).expandingTildeInPath))
         }
         let bundled = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Resources/tools-bin")
+            .appendingPathComponent("Contents/Resources/dockd-tools.app/Contents/MacOS")
         candidates.append(bundled)
         for candidate in candidates
         where fm.isExecutableFile(atPath: candidate.appendingPathComponent("dockd-obs").path) {

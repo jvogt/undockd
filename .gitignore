@@ -9,3 +9,7 @@ __pycache__/
 # Swift
 app/.build/
 app/dist/
+
+# PyInstaller
+tools/dockd-tools/build/
+tools/dockd-tools/dist/

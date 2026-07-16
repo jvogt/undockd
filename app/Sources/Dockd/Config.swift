@@ -16,6 +16,31 @@ enum Config {
             .appendingPathComponent("Library/Logs/dockd")
     }
 
+    /// Shared daemon state dir (same one the Python tools use for heartbeats).
+    static var stateDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/dockd/state")
+    }
+
+    /// Publish the current dock state for the Quick Keys daemon (which blanks
+    /// the pad and ignores presses when undocked). Written atomically.
+    static func writeDockState(_ docked: Bool) {
+        let file = stateDir.appendingPathComponent("dock.json")
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: ["docked": docked], options: []
+        ) else { return }
+        try? FileManager.default.createDirectory(
+            at: stateDir, withIntermediateDirectories: true
+        )
+        let tmp = file.appendingPathExtension("tmp")
+        do {
+            try data.write(to: tmp)
+            _ = try FileManager.default.replaceItemAt(file, withItemAt: tmp)
+        } catch {
+            try? data.write(to: file)  // best effort if atomic replace fails
+        }
+    }
+
     static func load() -> [String: Any] {
         guard let data = try? Data(contentsOf: path),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

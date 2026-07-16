@@ -64,9 +64,15 @@ end tell
 
 
 def _process_running(pattern: str) -> bool:
+    """True if any process's full command line contains ``pattern``.
+
+    Uses ``pgrep -f`` (substring of the argv), NOT ``-xf``: the app binaries
+    live at paths like ``/Applications/zoom.us.app/Contents/MacOS/zoom.us``, so
+    an exact whole-command-line match never fires.
+    """
     return (
         subprocess.run(
-            ["pgrep", "-xf", pattern], capture_output=True, check=False
+            ["pgrep", "-f", pattern], capture_output=True, check=False
         ).returncode
         == 0
     )

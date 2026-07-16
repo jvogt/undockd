@@ -25,9 +25,20 @@ struct SettingsView: View {
     @State private var inputCycle: [CycleEntry] = []
     @State private var outputDevices: [String] = []
     @State private var inputDevices: [String] = []
+    @State private var toolsAvailable = ToolRunner.binDir() != nil
+    @State private var obsReachable: Bool?      // nil = not checked yet
+    @State private var bluetoothOk: Bool?       // nil = unchecked; can we read Bluetooth?
+    @State private var bluetoothError: String?
 
     var body: some View {
         Form {
+            Section("Status") {
+                statusRow("Helper tools", ok: toolsAvailable,
+                          detail: toolsAvailable ? nil : "Not found — reinstall Dockd")
+                statusRow("Bluetooth", ok: bluetoothOk, detail: bluetoothDetail)
+                statusRow("OBS", ok: obsReachable,
+                          detail: obsReachable == false ? "Not running" : nil)
+            }
             Section("OBS scene collections") {
                 if let loadError {
                     Text(loadError).foregroundColor(.secondary).font(.caption)
@@ -102,15 +113,53 @@ struct SettingsView: View {
                     .buttonStyle(.borderless)
                 }
             }
+            if devices.isEmpty {
+                Text(devicesEmptyMessage)
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+            }
             Button {
-                entries.wrappedValue.append(
-                    CycleEntry(match: devices.first ?? "", label: "")
-                )
+                guard let first = devices.first else { return }
+                entries.wrappedValue.append(CycleEntry(match: first, label: ""))
             } label: {
                 Label("Add device", systemImage: "plus.circle")
             }
             .buttonStyle(.borderless)
+            .disabled(devices.isEmpty)  // never append a blank, unselectable row
         }
+    }
+
+    private var devicesEmptyMessage: String {
+        toolsAvailable
+            ? "No audio devices detected."
+            : "Helper tools not found — reinstall Dockd to choose devices."
+    }
+
+    /// A capability line: green check when available, amber warning when not,
+    /// grey question mark while unknown/unchecked.
+    private func statusRow(_ label: String, ok: Bool?, detail: String?) -> some View {
+        HStack(spacing: 8) {
+            switch ok {
+            case .some(true):
+                Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+            case .some(false):
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+            case .none:
+                Image(systemName: "questionmark.circle").foregroundColor(.secondary)
+            }
+            Text(label)
+            Spacer()
+            if let detail {
+                Text(detail).foregroundColor(.secondary).font(.caption)
+            }
+        }
+    }
+
+    private var bluetoothDetail: String? {
+        if let bluetoothError {
+            return "\(bluetoothError) — check System Settings › Privacy › Bluetooth"
+        }
+        return bluetoothOk == nil ? "Not yet checked" : nil
     }
 
     private func deviceChoices(_ devices: [String], current: String) -> [String] {
@@ -146,12 +195,22 @@ struct SettingsView: View {
             fallback: [CycleEntry(match: "MacBook Pro Microphone", label: "Sys"),
                        CycleEntry(match: "AirPods", label: "Pods")]
         )
+        toolsAvailable = ToolRunner.binDir() != nil
+        guard toolsAvailable else {
+            // Nothing below can succeed without the helper tools; surface it
+            // once here instead of letting each call fail silently.
+            loadError = "Dockd's helper tools weren't found — reinstall the app."
+            obsReachable = nil
+            return
+        }
         ToolRunner.runAsync("dockd-obs", ["scene-collections"]) { result in
             if let list = result?["scene_collections"] as? [String] {
                 sceneCollections = list
                 loadError = nil
+                obsReachable = true
             } else {
                 loadError = "Could not load scene collections from OBS (is it running?)"
+                obsReachable = false
             }
         }
         ToolRunner.runAsync("dockd-audio", ["list"]) { result in
@@ -162,6 +221,13 @@ struct SettingsView: View {
             inputDevices = devices
                 .filter { $0["input"] as? Bool == true }
                 .compactMap { $0["name"] as? String }
+        }
+        // Full AirPods status reports Bluetooth readability (and triggers the
+        // permission prompt on first access, attributed to Dockd).
+        ToolRunner.runAsync("dockd-audio", ["airpods", "status"], timeout: 25) { result in
+            guard let result else { return }  // couldn't run; leave as unchecked
+            bluetoothError = result["bluetooth_error"] as? String
+            bluetoothOk = bluetoothError == nil
         }
     }
 

@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> None:
     p_air.add_argument(
         "--fast",
         action="store_true",
-        help="status only: skip the blueutil availability check (CoreAudio only)",
+        help="status only: skip the IOBluetooth availability check (CoreAudio only)",
     )
 
     p_cycle = sub.add_parser(

@@ -79,8 +79,12 @@ DEFAULTS: dict[str, Any] = {
         "fallback_timeout_seconds": 1200,
     },
     "quickkeys": {
-        # Sync the wheel ring / buttons from the on-air watcher
+        # Drive the pad from its own always-on daemon (dockd-quickkeys run),
+        # independent of dock/on-air state.
         "enabled": True,
+        # How often the daemon refreshes meeting state for the mute key, in
+        # seconds (only polled when a toggle_mute button is mapped).
+        "poll_interval": 0.5,
         # Wheel ring colors, as [r, g, b]
         "onair_color": [255, 0, 0],
         "offair_color": [0, 255, 0],

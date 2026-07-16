@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "obsws-python>=1.7",
     "hidapi>=0.14",
+    "pyobjc-framework-IOBluetooth>=10.0",
 ]
 
 [project.scripts]
@@ -28,4 +29,5 @@ packages = ["src/dockd_tools"]
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pyinstaller>=6.6",
 ]

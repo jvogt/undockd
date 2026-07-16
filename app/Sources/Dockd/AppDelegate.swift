@@ -30,6 +30,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.model.restartDaemons()
             self?.model.poll()
         }
+        // Docking/undocking almost always changes the display layout; use that
+        // as an instant trigger for a dock re-check instead of waiting for the
+        // poll cadence.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Self.log.info("screen parameters changed; re-checking dock")
+            self?.model.recheckDock()
+        }
         Self.log.info("Dockd started; tools at \(ToolRunner.binDir()?.path ?? "NOT FOUND", privacy: .public)")
         // Debug hook: DOCKD_OPEN_SETTINGS=1 opens the settings window on launch.
         if ProcessInfo.processInfo.environment["DOCKD_OPEN_SETTINGS"] == "1" {
@@ -55,10 +65,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let available = model.state.airpodsAvailable ?? model.state.airpodsConnected
         if available {
             Self.log.info("menubar click: toggling airpods")
-            model.toggleAirpods { _ in }
+            model.toggleAirpods { [weak self] in self?.reportAirpodsToggle($0) }
         } else {
             openMenu()
         }
+    }
+
+    /// Surface an explicit toggle failure to the user — a menubar click that
+    /// silently does nothing (e.g. AirPods held by a phone) is confusing.
+    private func reportAirpodsToggle(_ result: [String: Any]?) {
+        guard let result, result["ok"] as? Bool == false else { return }
+        let detail = result["error"] as? String
+            ?? "The AirPods didn't respond. Try selecting them from the macOS Sound menu."
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn't switch to AirPods"
+        alert.informativeText = detail
+        alert.runModal()
     }
 
     private func openMenu() {
@@ -77,6 +101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
 
+        // Without the helper tools nothing below can report real state; say so
+        // up front rather than showing a menu full of "unknown"s.
+        if ToolRunner.binDir() == nil {
+            statusLine("⚠ Helper tools not found — reinstall Dockd")
+            menu.addItem(.separator())
+        }
+
         switch state.docked {
         case .some(true): statusLine("Docked")
         case .some(false): statusLine("Undocked")
@@ -84,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if state.airpodsAvailable == nil && !state.airpodsConnected {
-            statusLine("AirPods state unknown (Bluetooth permission?)")
+            statusLine("AirPods state unknown — grant Bluetooth in System Settings")
         } else {
             statusLine(state.airpodsConnected ? "AirPods connected" : "AirPods disconnected")
         }
@@ -101,6 +132,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         statusLine("virtualcam-sleep: \(state.camSleepHealthy ? "healthy" : "not running")")
+        let quickkeysHealth: String
+        if !state.quickkeysHealthy {
+            quickkeysHealth = "not running"
+        } else {
+            quickkeysHealth = state.quickkeysConnected ? "connected" : "no device"
+        }
+        statusLine("Quick Keys: \(quickkeysHealth)")
         let onairHealth = state.docked == false
             ? "off (undocked)"
             : (state.onairHealthy ? "healthy" : "not running")
@@ -138,7 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleVirtualcam() { model.toggleVirtualcam() }
-    @objc private func toggleAirpodsAction() { model.toggleAirpods { _ in } }
+    @objc private func toggleAirpodsAction() {
+        model.toggleAirpods { [weak self] in self?.reportAirpodsToggle($0) }
+    }
     @objc private func openSettings() { settings.show() }
     @objc private func quitApp() { NSApp.terminate(nil) }
 }

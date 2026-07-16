@@ -23,7 +23,7 @@ shutdown (e.g. undocking stops the on-air watcher) every key label and the
 wheel color are cleared so the pad goes dark.
 
 Threading: the pump thread only does fast HID polling and label sync; a
-separate refresher thread owns the slow calls (blueutil, CoreAudio device
+separate refresher thread owns the slow calls (IOBluetooth, CoreAudio device
 walks) and publishes a snapshot, so button presses react instantly from
 cached state instead of waiting on Bluetooth.
 """
@@ -36,6 +36,7 @@ import time
 from typing import Any
 
 from . import audiocycle, config as cfg, coreaudio, meeting
+from .bluetooth import BluetoothUnavailable
 from .obs import Obs
 
 TEXT_MUTED = "Muted"
@@ -74,6 +75,10 @@ class QuickKeysBridge:
         self._obs_scene_collection: str | None = None
         self._obs: Obs | None = None  # refresher-thread only
         self._applied: dict[Any, Any] = {}
+        # Active = docked. When inactive the pad is blanked and presses ignored,
+        # but the device stays open so re-docking relights it instantly.
+        self._active = True
+        self._repaint = False  # pump repaints from scratch after an active flip
         self._device = None
         self._stop = threading.Event()
         self._kick = threading.Event()  # wake the refresher early
@@ -117,9 +122,28 @@ class QuickKeysBridge:
             device.close()
 
     def set_meeting_state(self, state: dict[str, Any]) -> None:
-        """Called from the on-air loop on every poll (0.5s cadence)."""
+        """Called from the daemon loop on every poll (0.5s cadence)."""
         with self._lock:
             self._meeting = dict(state)
+
+    def set_active(self, active: bool) -> None:
+        """Enable/disable pad output + input based on dock state.
+
+        Inactive (undocked): the next sync blanks every key and the wheel, and
+        button presses are ignored. Active (docked): force a full repaint so the
+        labels/colors come back immediately.
+        """
+        if active == self._active:
+            return
+        self._active = active
+        self._repaint = True  # picked up by the pump thread's _sync
+        self.log.info(
+            "quickkeys %s", "active (docked)" if active else "inactive (undocked) — pad dark"
+        )
+
+    @property
+    def active(self) -> bool:
+        return self._active
 
     @property
     def connected(self) -> bool:
@@ -233,6 +257,8 @@ class QuickKeysBridge:
     # -- key handling ------------------------------------------------------------
 
     def _handle_key(self, device, key: int) -> None:
+        if not self._active:
+            return  # undocked: pad is dark and presses are ignored
         action = self._actions.get(key)
         if not action:
             return
@@ -314,6 +340,11 @@ class QuickKeysBridge:
         except audiocycle.NoChoicesError:
             self.log.info("cycle_%s: %s", direction, no_choices)
             self._overlay(device, no_choices)
+        except BluetoothUnavailable as exc:
+            # e.g. AirPods that are paired but grabbed by a phone — a page
+            # timeout, not "no choices". Say so instead of "No Output Choices".
+            self.log.info("cycle_%s: %s", direction, exc)
+            self._overlay(device, "AirPods unavailable")
         except Exception as exc:
             self.log.warning("cycle_%s failed: %s", direction, exc)
             self._overlay(device, no_choices)
@@ -321,9 +352,31 @@ class QuickKeysBridge:
     # -- hardware sync -------------------------------------------------------------
 
     def _sync(self, device) -> None:
+        if self._repaint:
+            # Active state just flipped — forget what's on the pad so we either
+            # fully blank it (going inactive) or fully repaint it (going active).
+            self._applied = {}
+            self._repaint = False
+
+        if not self._active:
+            # Undocked: everything dark. Blank once, then the _applied diff
+            # below makes subsequent syncs no-ops until we go active again.
+            desired: dict[Any, Any] = {("text", k): "" for k in range(8)}
+            desired["color"] = (0, 0, 0)
+            for item, value in desired.items():
+                if self._applied.get(item) == value:
+                    continue
+                with self._dev_lock:
+                    if item == "color":
+                        device.set_wheel_color(*value)
+                    else:
+                        device.set_key_text(item[1], value)
+                self._applied[item] = value
+            return
+
         snapshot = self._snapshot()
         m = snapshot["meeting"]
-        desired: dict[Any, Any] = {}
+        desired = {}
 
         mute_key = self._keys.get("toggle_mute")
         if mute_key is not None:

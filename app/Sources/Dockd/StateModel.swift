@@ -14,6 +14,8 @@ struct DockdState: Equatable {
     var inMeeting = false
     var onairHealthy = false
     var camSleepHealthy = false
+    var quickkeysHealthy = false
+    var quickkeysConnected = false
 }
 
 /// Polls the dockd CLIs, applies the dock automation rules, and supervises
@@ -28,7 +30,14 @@ final class StateModel {
         name: "virtualcam-sleep", tool: "dockd-virtualcam-sleep", args: ["run"]
     )
     private let onair = DaemonSupervisor(name: "onair", tool: "dockd-onair", args: ["run"])
+    // Always-on: the Quick Keys pad is a USB desk peripheral, not gated on the
+    // dock/on-air state like `onair` is.
+    private let quickKeys = DaemonSupervisor(
+        name: "quickkeys", tool: "dockd-quickkeys", args: ["run"]
+    )
     private var timer: Timer?
+    private var dockTimer: Timer?
+    private var onairTimer: Timer?
     private var polling = false
     private var repollRequested = false
     private var pollCount = 0
@@ -39,6 +48,7 @@ final class StateModel {
 
     func start() {
         camSleep.start()
+        quickKeys.start()
         // React to device swaps instantly instead of waiting for the timer.
         audioWatcher = AudioDeviceWatcher { [weak self] in
             self?.pollAudio()
@@ -47,12 +57,108 @@ final class StateModel {
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.poll()
         }
+        // Dock detection runs on its own light path (just dockd-dock, applied
+        // immediately) so a slow AirPods/OBS status in the main poll can never
+        // delay dock/undock reaction.
+        checkDockOnly()
+        dockTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
+            self?.checkDockOnly()
+        }
+        // Track on-air/mute state by reading the daemon's heartbeat directly
+        // (~1s, no subprocess) so the menubar icon keeps up with the pad rather
+        // than lagging behind the 3s main poll.
+        readOnairState()
+        onairTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.readOnairState()
+        }
     }
 
     func shutdown() {
         timer?.invalidate()
+        dockTimer?.invalidate()
+        onairTimer?.invalidate()
         camSleep.stop()
         onair.stop()
+        quickKeys.stop()
+    }
+
+    /// Read the on-air daemon's heartbeat file directly for fast icon updates.
+    /// Freshness (recent timestamp) stands in for health; a stopped daemon
+    /// (undocked) goes stale and reads as not-on-air within a few seconds.
+    private func readOnairState() {
+        let file = Config.stateDir.appendingPathComponent("onair.json")
+        var healthy = false, onAir = false, inMeeting = false
+        if let data = try? Data(contentsOf: file),
+           let hb = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let ts = hb["ts"] as? Double ?? 0
+            let interval = hb["interval"] as? Double ?? 1
+            healthy = Date().timeIntervalSince1970 - ts < interval * 2 + 5
+            if healthy {
+                onAir = hb["on_air"] as? Bool ?? false
+                inMeeting = hb["in_meeting"] as? Bool ?? false
+            }
+        }
+        var next = state
+        next.onairHealthy = healthy
+        next.onAir = onAir
+        next.inMeeting = inMeeting
+        if next != state {
+            state = next
+            onChange?(next)
+        }
+    }
+
+    /// Re-check the dock now, ahead of the normal cadence. Called from a
+    /// display attach/detach (a strong dock signal). Undock is instant, but a
+    /// freshly-plugged Thunderbolt dock can take many seconds to enumerate into
+    /// system_profiler, so probe in a decaying burst rather than once.
+    func recheckDock() {
+        for delay in [0.0, 2, 4, 7, 11, 16, 22] as [Double] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.checkDockOnly()
+            }
+        }
+    }
+
+    private func probeDock() -> Bool? {
+        ToolRunner.run("dockd-dock", ["status"], timeout: 15)?["docked"] as? Bool
+    }
+
+    /// Lightweight dock probe (spawns just dockd-dock). A state *change* is
+    /// confirmed by a second probe ~1.5s later before it is applied: docking a
+    /// Thunderbolt bus makes system_profiler briefly report the tree without the
+    /// hub, which otherwise shows up as a spurious undock/redock flap.
+    private func checkDockOnly() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self, let reading = self.probeDock() else { return }
+            DispatchQueue.main.async {
+                guard self.state.docked != reading else { return }
+                if self.state.docked == nil {
+                    self.applyDock(reading)  // first detection — nothing to flap against
+                    return
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    guard let self, let confirm = self.probeDock() else { return }
+                    DispatchQueue.main.async {
+                        // Only flip if the change persisted and nothing else
+                        // already applied it in the meantime.
+                        guard confirm == reading, self.state.docked != reading else { return }
+                        Self.log.info("dock change confirmed: \(reading ? "docked" : "undocked", privacy: .public)")
+                        self.applyDock(reading)
+                    }
+                }
+            }
+        }
+    }
+
+    private func applyDock(_ docked: Bool) {
+        guard state.docked != docked else { return }
+        var next = state
+        next.docked = docked
+        let previous = state
+        state = next
+        applyAutomations(current: next)
+        if next != previous { onChange?(next) }
     }
 
     func poll() {
@@ -62,10 +168,9 @@ final class StateModel {
         }
         polling = true
         pollCount += 1
-        // system_profiler is slow; check the dock every 4th cycle (~12s).
-        let checkDock = pollCount % 4 == 1
-        // blueutil can stall for seconds; do the full availability check
-        // every 4th cycle too, and a CoreAudio-only fast check otherwise.
+        // Dock state has its own light path (checkDockOnly); the main poll only
+        // covers AirPods/OBS/daemon health. Do the full (IOBluetooth) AirPods
+        // availability check every 4th cycle, a CoreAudio-only fast check otherwise.
         let fullAirpods = pollCount % 4 == 2 || pollCount == 1
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
@@ -73,9 +178,6 @@ final class StateModel {
             // read as a state change.
             var next = self.state
 
-            if checkDock, let dock = ToolRunner.run("dockd-dock", ["status"], timeout: 40) {
-                next.docked = dock["docked"] as? Bool
-            }
             let airpodsArgs = fullAirpods
                 ? ["airpods", "status"] : ["airpods", "status", "--fast"]
             if let pods = ToolRunner.run("dockd-audio", airpodsArgs) {
@@ -86,13 +188,13 @@ final class StateModel {
                 next.virtualcamActive = obs["virtualcam_active"] as? Bool ?? false
                 next.currentSceneCollection = obs["current_scene_collection"] as? String
             }
-            if let onairStatus = ToolRunner.run("dockd-onair", ["status"]) {
-                next.onairHealthy = onairStatus["healthy"] as? Bool ?? false
-                next.onAir = onairStatus["on_air"] as? Bool ?? false
-                next.inMeeting = onairStatus["in_meeting"] as? Bool ?? false
-            }
+            // on-air/mute state comes from readOnairState() (fast heartbeat read).
             if let camStatus = ToolRunner.run("dockd-virtualcam-sleep", ["status"]) {
                 next.camSleepHealthy = camStatus["healthy"] as? Bool ?? false
+            }
+            if let qkStatus = ToolRunner.run("dockd-quickkeys", ["status"]) {
+                next.quickkeysHealthy = qkStatus["healthy"] as? Bool ?? false
+                next.quickkeysConnected = qkStatus["connected"] as? Bool ?? false
             }
 
             DispatchQueue.main.async {
@@ -162,6 +264,9 @@ final class StateModel {
 
         guard docked != appliedDockState else { return }
         appliedDockState = docked
+        // Publish for the Quick Keys daemon: it blanks the pad and ignores
+        // presses while undocked, and relights the moment this flips back.
+        Config.writeDockState(docked)
 
         let slot = docked ? "docked" : "undocked"
         Self.log.info("dock state: \(docked ? "docked" : "undocked", privacy: .public); applying scene-collection slot \(slot, privacy: .public)")
@@ -191,6 +296,9 @@ final class StateModel {
                     self.state = next
                     self.onChange?(next)
                 }
+            } else if let error = result?["error"] as? String {
+                // e.g. AirPods bonded to a phone won't answer a Bluetooth page.
+                Self.log.info("airpods toggle failed: \(error, privacy: .public)")
             }
             self.poll()
             completion(result)
@@ -205,5 +313,6 @@ final class StateModel {
     func restartDaemons() {
         camSleep.restart()
         onair.restart()
+        quickKeys.restart()
     }
 }

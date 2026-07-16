@@ -13,10 +13,15 @@
 
 ## Testing blockers (needs hardware/permissions/situations I couldn't produce)
 
-- [ ] **Bluetooth permission**: `blueutil` aborted in my shell (no Bluetooth
-  TCC permission), so `dockd-audio airpods connect/activate/toggle` and the
-  "available but not connected" state are untested. Launch Dockd.app, click
-  the menubar icon with AirPods nearby, and accept the Bluetooth prompt.
+- [ ] **Bluetooth permission**: AirPods now use IOBluetooth (PyObjC) in-process
+  instead of `blueutil`. Any process that touches IOBluetooth without an
+  `NSBluetoothAlwaysUsageDescription` is hard-killed by TCC, so the frozen
+  `dockd-tools.app` carries that key; when spawned by Dockd.app the prompt is
+  attributed to Dockd. `dockd-audio airpods connect/activate/toggle` and the
+  "available but not connected" state are still untested on real hardware.
+  Launch Dockd.app, click the menubar icon with AirPods nearby, and accept the
+  Bluetooth prompt. (Running a tool straight from a terminal still aborts —
+  the terminal is the responsible process and lacks the usage string.)
 - [ ] **AirPods icon states**: no AirPods were connected during development;
   verify the outline → solid → mic-badge transitions and left-click toggle.
 - [ ] **Zoom mute detection + toggle**: needs a real Zoom meeting and the

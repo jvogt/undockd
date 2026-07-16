@@ -41,6 +41,10 @@ scripts/bundle.sh                # builds app/dist/Dockd.app
 open dist/Dockd.app              # or: scripts/bundle.sh --install
 ```
 
+`bundle.sh` freezes the Python tools into the app with PyInstaller, so
+`Dockd.app` is self-contained and can be copied to another Mac with no Python
+or Homebrew installed.
+
 On first run, grant the permission prompts (Automation → System Events and
 Google Chrome for mute detection, Bluetooth for AirPods control). For Google
 Meet mute state, enable Chrome's View → Developer → *Allow JavaScript from
@@ -59,8 +63,11 @@ Apple Events*.
   system has been idle longer than the screensaver timeout (minus a margin),
   restarts it on activity, and never stops it during an active meeting.
 - **on-air** (while docked): watches Zoom / Google Meet mute state and
-  switches Home Assistant scenes (`unmuted` / `muted` / `unknown`); also
-  drives the Quick Keys pad. On connect every key label is cleared, then:
+  switches Home Assistant scenes (`unmuted` / `muted` / `unknown`).
+- **Quick Keys** (always on, `dockd-quickkeys run`): drives the Xencelabs
+  Quick Keys pad whenever it is attached — independent of dock/on-air state,
+  since it is a USB desk peripheral. On connect every key label is cleared,
+  then:
   - key 0 — "Muted"/"Unmuted" while in a meeting (blank otherwise);
     pressing toggles the meeting mute, and muting inside Zoom/Meet updates
     the key within ~0.5s.
@@ -77,8 +84,9 @@ Apple Events*.
     flips between the docked/undocked mapped scene collections. Shows
     "No OBS" when OBS is unreachable.
 
-  When the on-air watcher stops (e.g. on undock), all key labels and the
-  wheel ring are cleared so the pad goes dark.
+  When the daemon stops (quit / device unplugged), all key labels and the
+  wheel ring are cleared so the pad goes dark. The mute key and wheel color
+  reflect meeting state, which the Quick Keys daemon detects on its own.
 
   Switching output to AirPods pins the default *input* device so macOS
   can't hijack it onto the AirPods mic (`audio.keep_input`). The wheel ring

@@ -23,7 +23,6 @@ from ..cliutil import Heartbeat, emit, fail, read_heartbeat, heartbeat_healthy
 from ..homeassistant import HomeAssistant, HomeAssistantError
 from ..log import get_logger
 from ..meeting import detect
-from ..quickkeys_bridge import QuickKeysBridge
 
 log = get_logger("dockd-onair")
 
@@ -48,21 +47,15 @@ def run(config: dict) -> None:
     heartbeat = Heartbeat("onair", max(interval, 1))
     current_scene: str | None = None
     ha_ok = True
-    quickkeys = QuickKeysBridge(config, log)
-    quickkeys.start()
 
     def reset(signum=None, frame=None):
-        quickkeys.stop()
         try:
             ha.turn_on_scene(_scene_for(config, "unknown"))
             log.info("reset on-air light to unknown scene")
         except HomeAssistantError as exc:
             log.warning("could not reset on-air light: %s", exc)
         heartbeat.clear()
-        # Exit without running Python's atexit handlers: cython-hidapi
-        # registers hid_exit there, and its IOHIDManager teardown crashes
-        # ("Python quit unexpectedly") once HID was used from a worker
-        # thread whose run loop is gone. All our cleanup already happened.
+        # Exit promptly from the signal handler; nothing else to flush.
         logging.shutdown()
         os._exit(0)
 
@@ -72,7 +65,6 @@ def run(config: dict) -> None:
 
     while True:
         state = detect()
-        quickkeys.set_meeting_state(state)
         scene = _scene_for(config, state["state"])
         if scene != current_scene:
             try:
@@ -94,8 +86,6 @@ def run(config: dict) -> None:
             in_meeting=state["in_meeting"],
             on_air=state["state"] == "unmuted",
             ha_ok=ha_ok,
-            quickkeys_connected=quickkeys.connected,
-            obs_scene_collection=quickkeys.obs_scene_collection,
         )
         time.sleep(interval)
 

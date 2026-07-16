@@ -40,7 +40,7 @@ def resolve(
 
     Returns ``{"entry": ..., "device": AudioDevice | None, "connectable": bool}``
     per usable entry; ``device`` is None for the available-but-disconnected
-    AirPods case. Pass a cached ``airpods_status`` to avoid a blueutil call.
+    AirPods case. Pass a cached ``airpods_status`` to avoid an IOBluetooth call.
     """
     airpods_match = cfg.get(config, "audio.airpods_match", "AirPods")
     resolved = []

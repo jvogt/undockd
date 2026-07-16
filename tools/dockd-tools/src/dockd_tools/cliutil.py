@@ -62,6 +62,21 @@ class Heartbeat:
             pass
 
 
+def read_dock_flag() -> bool | None:
+    """Latest docked flag the menubar app wrote to ``state/dock.json``.
+
+    Returns None when unknown (file missing/unwritten/garbled) so callers can
+    pick their own default rather than guessing docked vs. undocked.
+    """
+    path = STATE_DIR / "dock.json"
+    try:
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    value = data.get("docked")
+    return value if isinstance(value, bool) else None
+
+
 def read_heartbeat(name: str) -> dict[str, Any] | None:
     path = Path(STATE_DIR / f"{name}.json")
     try:

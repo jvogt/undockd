@@ -1,27 +1,56 @@
 #!/bin/bash
-# Build Dockd.app into app/dist/.
+# Build a portable Dockd.app into app/dist/.
 #
 # Usage: scripts/bundle.sh [--install]
 #   --install    also copy the bundle to /Applications
 #
-# The app locates the Python tools via a tools-bin symlink inside
-# Resources, pointing at tools/dockd-tools/.venv/bin (run `uv sync` there
-# first). Override at runtime with DOCKD_TOOLS_BIN or config tools.bin_dir.
+# The Python tools are frozen with PyInstaller into a self-contained helper app
+# (dockd-tools.app) and embedded under Resources, so the bundle carries its own
+# interpreter and native deps — no system Python, no Homebrew, no dev-machine
+# symlinks. dockd-tools.app declares NSBluetoothAlwaysUsageDescription because
+# any process that touches IOBluetooth without it is hard-killed by TCC.
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_DIR="$(dirname "$APP_DIR")"
-TOOLS_BIN="$REPO_DIR/tools/dockd-tools/.venv/bin"
+TOOLS_DIR="$REPO_DIR/tools/dockd-tools"
 DIST="$APP_DIR/dist"
 BUNDLE="$DIST/Dockd.app"
 
+# The dockd-<name> CLIs, dispatched from one frozen `dockd` executable by
+# argv[0] basename (see dockd_tools/dispatch.py).
+TOOL_NAMES=(obs audio dock idle meeting onair virtualcam-sleep quickkeys)
+
+# --- 1. Swift menubar app -------------------------------------------------
 cd "$APP_DIR"
 swift build -c release
 
+# --- 2. Freeze the Python tools ------------------------------------------
+echo "freezing dockd-tools with PyInstaller…"
+cd "$TOOLS_DIR"
+uv sync
+rm -rf build dist
+uv run pyinstaller dockd-tools.spec --noconfirm --distpath dist --workpath build
+TOOLS_APP="$TOOLS_DIR/dist/dockd-tools.app"
+TOOLS_MACOS="$TOOLS_APP/Contents/MacOS"
+# Busybox symlinks so each dockd-<name> resolves to the shared executable.
+for name in "${TOOL_NAMES[@]}"; do
+    ln -sf dockd "$TOOLS_MACOS/dockd-$name"
+done
+
+# --- 3. Assemble Dockd.app ------------------------------------------------
+cd "$APP_DIR"
+# Stop any running instance first: its supervised daemons execute out of the
+# bundle, so files stay open and rm -rf / cp would fail ("Operation not
+# permitted") mid-rebuild.
+killall Dockd 2>/dev/null || true
+pkill -f 'dockd-tools.app/Contents/MacOS/dockd' 2>/dev/null || true
+sleep 1
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 
 cp "$APP_DIR/.build/release/Dockd" "$BUNDLE/Contents/MacOS/Dockd"
+cp -R "$TOOLS_APP" "$BUNDLE/Contents/Resources/dockd-tools.app"
 
 cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -56,13 +85,11 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-if [ -d "$TOOLS_BIN" ]; then
-    ln -s "$TOOLS_BIN" "$BUNDLE/Contents/Resources/tools-bin"
-else
-    echo "warning: $TOOLS_BIN not found — run 'uv sync' in tools/dockd-tools," >&2
-    echo "         or set tools.bin_dir in the dockd config." >&2
-fi
-
+# --- 4. Codesign inside-out ----------------------------------------------
+# Sign the nested tools app first (deep, so every bundled dylib is covered),
+# then the outer app. Ad-hoc (`-s -`) is fine for a Mac the user owns; swap in
+# a Developer ID identity for distribution.
+codesign --force --deep --sign - "$BUNDLE/Contents/Resources/dockd-tools.app"
 codesign --force --sign - "$BUNDLE"
 
 echo "built $BUNDLE"

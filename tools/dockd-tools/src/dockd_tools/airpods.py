@@ -1,50 +1,27 @@
-"""AirPods availability and connection, via blueutil + CoreAudio.
+"""AirPods availability and connection, via IOBluetooth + CoreAudio.
 
-- "available": paired and in Bluetooth range (blueutil sees them)
+- "available": paired and in Bluetooth range (IOBluetooth sees them)
 - "connected": Bluetooth-connected (they show up as audio devices)
 - "active output"/"active input": they are the system default device
 
-blueutil needs the Bluetooth TCC permission for the calling app; when it is
-missing or blueutil is not installed we degrade to what CoreAudio can tell us
-(connected + active states still work).
+Querying IOBluetooth needs the Bluetooth TCC permission for the calling app;
+when it is unreadable (permission denied, adapter off) we degrade to what
+CoreAudio can tell us (connected + active states still work).
 """
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
 import time
 from typing import Any
 
-from . import coreaudio
-
-
-class BluetoothUnavailable(RuntimeError):
-    pass
-
-
-def _blueutil(*args: str, timeout: float = 15) -> str:
-    exe = shutil.which("blueutil")
-    if not exe:
-        raise BluetoothUnavailable("blueutil not installed (brew install blueutil)")
-    proc = subprocess.run(
-        [exe, *args], capture_output=True, text=True, timeout=timeout
-    )
-    if proc.returncode != 0:
-        raise BluetoothUnavailable(
-            proc.stderr.strip() or f"blueutil {' '.join(args)} failed"
-        )
-    return proc.stdout
+from . import bluetooth, coreaudio
+from .bluetooth import BluetoothUnavailable
 
 
 def paired_airpods(match: str) -> dict[str, Any] | None:
     """First paired Bluetooth device whose name contains ``match``."""
-    # Short timeout: this runs on every status poll and must never stall
-    # the caller (a hung TCC prompt would otherwise block for the default).
-    devices = json.loads(_blueutil("--paired", "--format", "json", timeout=3))
     needle = match.lower()
-    for device in devices:
+    for device in bluetooth.paired_devices():
         if needle in (device.get("name") or "").lower():
             return device
     return None
@@ -55,7 +32,7 @@ def _audio_device(match: str, direction: str) -> coreaudio.AudioDevice | None:
 
 
 def status(match: str, include_bluetooth: bool = True) -> dict[str, Any]:
-    """AirPods state. ``include_bluetooth=False`` skips the (slow) blueutil
+    """AirPods state. ``include_bluetooth=False`` skips the IOBluetooth
     availability check and reports only what CoreAudio can tell — connected
     and active states — in a few hundred milliseconds."""
     result: dict[str, Any] = {
@@ -74,7 +51,7 @@ def status(match: str, include_bluetooth: bool = True) -> dict[str, Any]:
                 result["address"] = paired.get("address")
                 result["name"] = paired.get("name")
                 result["connected"] = bool(paired.get("connected"))
-        except (BluetoothUnavailable, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        except BluetoothUnavailable as exc:
             result["bluetooth_error"] = str(exc)
 
     output_device = _audio_device(match, "output")
@@ -97,7 +74,15 @@ def connect(match: str, wait_seconds: float = 10) -> dict[str, Any]:
     if not paired:
         raise BluetoothUnavailable(f"no paired device matching {match!r}")
     if not paired.get("connected"):
-        _blueutil("--connect", paired["address"], timeout=wait_seconds + 5)
+        try:
+            bluetooth.connect(paired["address"])
+        except BluetoothUnavailable as exc:
+            # Classic paging can't pull AirPods off another active Apple device
+            # (that needs the OS audio handoff). Point the user at what works.
+            raise BluetoothUnavailable(
+                f"{match} {exc}. If they're in use by another device, "
+                f"select them from the macOS Sound menu."
+            ) from exc
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         if _audio_device(match, "output"):
