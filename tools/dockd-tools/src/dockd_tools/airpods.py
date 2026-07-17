@@ -1,7 +1,10 @@
 """AirPods availability and connection, via IOBluetooth + CoreAudio.
 
-- "available": paired and in Bluetooth range (IOBluetooth sees them)
-- "connected": Bluetooth-connected (they show up as audio devices)
+- "connected": Bluetooth-connected to this Mac (IOBluetooth reports it, or they
+  show up as an audio device)
+- "available": reachable/usable right now — currently equivalent to connected.
+  Paired-but-disconnected (in the case, out of range, or on another device)
+  reads as NOT available, because routing audio to them would just fail.
 - "active output"/"active input": they are the system default device
 
 Querying IOBluetooth needs the Bluetooth TCC permission for the calling app;
@@ -46,17 +49,20 @@ def status(match: str, include_bluetooth: bool = True) -> dict[str, Any]:
     if include_bluetooth:
         try:
             paired = paired_airpods(match)
-            result["available"] = paired is not None
             if paired:
                 result["address"] = paired.get("address")
                 result["name"] = paired.get("name")
                 result["connected"] = bool(paired.get("connected"))
+            # "available" means reachable/usable now — NOT merely paired. AirPods
+            # sitting in the case (or out of range) stay paired but disconnected,
+            # and trying to route audio to them just fails, so don't offer them.
+            result["available"] = result["connected"]
         except BluetoothUnavailable as exc:
             result["bluetooth_error"] = str(exc)
 
     output_device = _audio_device(match, "output")
     if output_device:
-        # Present as an audio device implies connected even without blueutil
+        # Present as an audio device implies connected (and thus available).
         result["connected"] = True
         result.setdefault("name", output_device.name)
         default_out = coreaudio.get_default("output")
@@ -65,6 +71,8 @@ def status(match: str, include_bluetooth: bool = True) -> dict[str, Any]:
     if input_device:
         default_in = coreaudio.get_default("input")
         result["active_input"] = bool(default_in and default_in.id == input_device.id)
+    if result["connected"]:
+        result["available"] = True
     return result
 
 

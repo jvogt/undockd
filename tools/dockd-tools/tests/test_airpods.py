@@ -98,6 +98,31 @@ def test_status_degrades_when_bluetooth_unreadable(monkeypatch):
     assert result["bluetooth_error"] == "permission denied"
 
 
+def test_available_false_when_paired_but_in_case(monkeypatch):
+    # Paired but disconnected (in the case / out of range) → NOT available.
+    monkeypatch.setattr(
+        airpods,
+        "paired_airpods",
+        lambda match: {"name": "AirPods", "address": "aa", "connected": False},
+    )
+    monkeypatch.setattr(airpods, "_audio_device", lambda match, direction: None)
+    result = airpods.status("AirPods")
+    assert result["connected"] is False
+    assert result["available"] is False  # was True (paired) before the fix
+
+
+def test_available_true_when_connected(monkeypatch):
+    monkeypatch.setattr(
+        airpods,
+        "paired_airpods",
+        lambda match: {"name": "AirPods", "address": "aa", "connected": True},
+    )
+    monkeypatch.setattr(airpods, "_audio_device", lambda match, direction: None)
+    result = airpods.status("AirPods")
+    assert result["connected"] is True
+    assert result["available"] is True
+
+
 def test_status_fast_skips_bluetooth(monkeypatch):
     def boom():  # would raise if called
         raise AssertionError("bluetooth must not be queried in fast mode")

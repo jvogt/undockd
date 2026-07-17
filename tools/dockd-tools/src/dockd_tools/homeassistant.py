@@ -60,3 +60,12 @@ class HomeAssistant:
 
     def turn_on_scene(self, entity_id: str) -> None:
         self._post("/api/services/scene/turn_on", {"entity_id": entity_id})
+
+    def turn_on_light(self, entity_id: str, rgb: list[int] | tuple[int, int, int]) -> None:
+        self._post(
+            "/api/services/light/turn_on",
+            {"entity_id": entity_id, "rgb_color": list(rgb)},
+        )
+
+    def turn_off_light(self, entity_id: str) -> None:
+        self._post("/api/services/light/turn_off", {"entity_id": entity_id})

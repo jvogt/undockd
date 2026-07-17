@@ -41,17 +41,46 @@ def _ha(config: dict) -> HomeAssistant:
     )
 
 
+def _indicator_key(config: dict, state: str) -> str:
+    """Dedupe key for the current indicator, computed without touching HA."""
+    light = cfg.get(config, "onair.home_assistant.light")
+    if light:
+        norm = state if state in ("unmuted", "muted") else "off"
+        return f"light:{light}:{norm}"
+    return f"scene:{_scene_for(config, state)}"
+
+
+def _apply(config: dict, ha: HomeAssistant, state: str) -> None:
+    """Drive the on-air indicator for a mute state.
+
+    Prefers a direct RGB light matching the Quick Keys wheel — red unmuted (on
+    air), green muted, off when not in a meeting — using the same
+    quickkeys.onair_color / offair_color values. Falls back to named scenes when
+    no light entity is configured.
+    """
+    light = cfg.get(config, "onair.home_assistant.light")
+    if light:
+        if state == "unmuted":
+            ha.turn_on_light(light, cfg.get(config, "quickkeys.onair_color", [255, 0, 0]))
+        elif state == "muted":
+            ha.turn_on_light(light, cfg.get(config, "quickkeys.offair_color", [0, 255, 0]))
+        else:
+            ha.turn_off_light(light)
+    else:
+        ha.turn_on_scene(_scene_for(config, state))
+
+
 def run(config: dict) -> None:
     interval = float(cfg.get(config, "onair.poll_interval", 0.5))
     ha = _ha(config)
     heartbeat = Heartbeat("onair", max(interval, 1))
-    current_scene: str | None = None
+    current_key: str | None = None
     ha_ok = True
 
     def reset(signum=None, frame=None):
         try:
-            ha.turn_on_scene(_scene_for(config, "unknown"))
-            log.info("reset on-air light to unknown scene")
+            _apply(config, ha, "none")  # not in a meeting → light off / unknown scene
+            log.info("reset on-air indicator")
         except HomeAssistantError as exc:
             log.warning("could not reset on-air light: %s", exc)
         heartbeat.clear()
@@ -65,17 +94,15 @@ def run(config: dict) -> None:
 
     while True:
         state = detect()
-        scene = _scene_for(config, state["state"])
-        if scene != current_scene:
+        key = _indicator_key(config, state["state"])
+        if key != current_key:
             try:
-                ha.turn_on_scene(scene)
+                _apply(config, ha, state["state"])
                 if not ha_ok:
                     log.info("Home Assistant reachable again")
                     ha_ok = True
-                log.info(
-                    "state %s (%s) -> %s", state["state"], state["app"], scene
-                )
-                current_scene = scene
+                log.info("state %s (%s) -> %s", state["state"], state["app"], key)
+                current_key = key
             except HomeAssistantError as exc:
                 if ha_ok:
                     log.warning("%s", exc)
@@ -94,7 +121,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="dockd-onair", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run", help="run the watcher daemon")
-    p_set = sub.add_parser("set", help="manually fire a scene")
+    p_set = sub.add_parser("set", help="manually drive the on-air indicator (testing)")
     p_set.add_argument("state", choices=SCENE_KEYS)
     sub.add_parser("status", help="last daemon state")
 
@@ -108,10 +135,10 @@ def main(argv: list[str] | None = None) -> None:
             raise fail(str(exc))
     elif args.cmd == "set":
         try:
-            _ha(config).turn_on_scene(_scene_for(config, args.state))
+            _apply(config, _ha(config), args.state)
         except HomeAssistantError as exc:
             raise fail(str(exc))
-        emit({"ok": True, "scene": _scene_for(config, args.state)})
+        emit({"ok": True, "state": args.state})
     else:
         data = read_heartbeat("onair")
         emit(

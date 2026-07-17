@@ -62,6 +62,11 @@ DEFAULTS: dict[str, Any] = {
             # Set your Home Assistant long-lived access token here. Never
             # commit it to the repo.
             "token": None,
+            # Preferred: an RGB light entity driven directly to match the Quick
+            # Keys wheel — red when unmuted (on air), green when muted, off when
+            # not in a meeting. Uses quickkeys.onair_color / offair_color so the
+            # two always agree. When null, falls back to the scenes below.
+            "light": None,
             "scenes": {
                 "unmuted": "scene.zoom_unmuted",
                 "muted": "scene.zoom_muted",
