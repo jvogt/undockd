@@ -153,6 +153,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleCam.target = self
         menu.addItem(toggleCam)
 
+        // virtualcam-sleep policy, shared config key virtualcam_sleep.mode.
+        let camMode = Config.string("virtualcam_sleep.mode", default: "meeting")
+        let modeMenu = NSMenu()
+        let meetingsOnly = NSMenuItem(
+            title: "On Only During Meetings",
+            action: #selector(setCamModeMeeting), keyEquivalent: ""
+        )
+        meetingsOnly.target = self
+        meetingsOnly.state = camMode == "always" ? .off : .on
+        modeMenu.addItem(meetingsOnly)
+        let alwaysOn = NSMenuItem(
+            title: "Always On (Off When Idle)",
+            action: #selector(setCamModeAlways), keyEquivalent: ""
+        )
+        alwaysOn.target = self
+        alwaysOn.state = camMode == "always" ? .on : .off
+        modeMenu.addItem(alwaysOn)
+        modeMenu.addItem(.separator())
+        // Switch OBS to the input-free "sleep" collection whenever the daemon
+        // stops the camera, releasing the camera hardware.
+        let sleepToggle = NSMenuItem(
+            title: "Sleep Scene Collection When Off",
+            action: #selector(toggleSleepCollection), keyEquivalent: ""
+        )
+        sleepToggle.target = self
+        sleepToggle.state =
+            (Config.get("virtualcam_sleep.use_sleep_collection") as? Bool ?? false) ? .on : .off
+        modeMenu.addItem(sleepToggle)
+        let modeItem = NSMenuItem(title: "Virtual Camera Mode", action: nil, keyEquivalent: "")
+        menu.addItem(modeItem)
+        menu.setSubmenu(modeMenu, for: modeItem)
+
         let toggleAirpods = NSMenuItem(
             title: state.airpodsActiveOutput ? "Switch to system output" : "Use AirPods",
             action: #selector(toggleAirpodsAction), keyEquivalent: ""
@@ -176,6 +208,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleVirtualcam() { model.toggleVirtualcam() }
+    @objc private func setCamModeMeeting() { setCamMode("meeting") }
+    @objc private func setCamModeAlways() { setCamMode("always") }
+    @objc private func toggleSleepCollection() {
+        let current = Config.get("virtualcam_sleep.use_sleep_collection") as? Bool ?? false
+        Config.set("virtualcam_sleep.use_sleep_collection", to: !current)
+        NotificationCenter.default.post(name: .dockdConfigChanged, object: nil)
+    }
+    private func setCamMode(_ mode: String) {
+        guard Config.string("virtualcam_sleep.mode", default: "meeting") != mode else { return }
+        Config.set("virtualcam_sleep.mode", to: mode)
+        // Same path as saving Settings: restart the daemons so the new mode
+        // applies within a poll cycle.
+        NotificationCenter.default.post(name: .dockdConfigChanged, object: nil)
+    }
     @objc private func toggleAirpodsAction() {
         model.toggleAirpods { [weak self] in self?.reportAirpodsToggle($0) }
     }

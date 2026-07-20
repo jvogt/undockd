@@ -59,9 +59,24 @@ Apple Events*.
   collection, on-air watcher stopped.
 - **If OBS should be running but isn't, it is started** (`dockd-obs
   ensure-running`).
-- **virtualcam-sleep** (always on): stops the OBS virtual camera when the
-  system has been idle longer than the screensaver timeout (minus a margin),
-  restarts it on activity, and never stops it during an active meeting.
+- **virtualcam-sleep** (always on): manages the OBS virtual camera per the
+  `virtualcam_sleep.mode` config key, selectable from the menubar's
+  "Virtual Camera Mode" submenu:
+  - **On only during meetings** (default): the camera runs only while a
+    Zoom / Google Meet meeting — or a join/preview/waiting-room screen — is
+    detected.
+  - **Always on (off when idle)**: the camera runs whenever the system is
+    awake, stops after the system has been idle longer than the screensaver
+    timeout (minus a margin), restarts on activity, and never stops during
+    an active meeting.
+
+  With "Sleep Scene Collection When Off" enabled (same submenu, config key
+  `virtualcam_sleep.use_sleep_collection`), every camera stop the daemon
+  itself performs also switches OBS to the collection mapped to the "Sleep"
+  slot — a scene collection with no inputs, so the camera hardware is fully
+  released — and the dock-mapped collection is restored just before the
+  camera starts again. Only the daemon's own stops trigger this; stopping
+  the camera from the menubar or inside OBS never does.
 - **on-air** (while docked): watches Zoom / Google Meet mute state and
   switches Home Assistant scenes (`unmuted` / `muted` / `unknown`).
 - **Quick Keys** (always on, `dockd-quickkeys run`): drives the Xencelabs
@@ -105,12 +120,14 @@ Apple Events*.
 Left click: toggle AirPods as output (connects them first if needed); when
 no AirPods are available (dim speaker) it opens the menu instead. Right
 click: menu with status lines (docked, AirPods, on air, virtual camera,
-daemon health), virtual-camera and AirPods toggles, and Settings.
+daemon health), virtual-camera and AirPods toggles, the Virtual Camera Mode
+submenu (on only during meetings / always on, plus the sleep-scene-collection
+toggle), and Settings.
 
 ### Settings
 
-OBS scene-collection dropdowns for the Docked/Undocked slots (fetched live
-from OBS),
+OBS scene-collection dropdowns for the Docked/Undocked/Sleep slots (fetched
+live from OBS),
 dock-detection match string, Home Assistant URL/token, the Quick Keys
 output/input cycle lists (device picker + short custom label per entry —
 the pad fits ~5 characters after the "Out:"/"In:" prefix), tools location,

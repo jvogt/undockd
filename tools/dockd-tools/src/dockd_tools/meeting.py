@@ -167,6 +167,58 @@ def toggle_mute() -> dict[str, Any]:
     return {"app": None, "state": "none", "in_meeting": False}
 
 
+_ZOOM_WINDOWS_SCRIPT = """
+tell application "System Events"
+    if not (exists application process "zoom.us") then return ""
+    try
+        tell application process "zoom.us"
+            set out to ""
+            repeat with w in windows
+                set out to out & (name of w) & linefeed
+            end repeat
+            return out
+        end tell
+    end try
+    return ""
+end tell
+"""
+
+# Window titles Zoom uses before zoom_state() can see anything: the in-meeting
+# / waiting-room window ("Zoom Meeting") and the pre-join video preview.
+_ZOOM_JOIN_WINDOW_HINTS = ("zoom meeting", "video preview", "waiting")
+
+
+def zoom_join_screen() -> bool:
+    """True when Zoom shows a join/preview/waiting-room window.
+
+    On those screens the meeting hasn't started, so the "Meeting" menu (and
+    therefore zoom_state()) reports nothing — window titles are the only tell.
+    """
+    if not _process_running("zoom.us"):
+        return False
+    names = _osascript(_ZOOM_WINDOWS_SCRIPT) or ""
+    return any(
+        hint in line.lower()
+        for line in names.splitlines()
+        for hint in _ZOOM_JOIN_WINDOW_HINTS
+    )
+
+
+def meeting_or_joining() -> dict[str, Any]:
+    """Like detect(), but join screens also count as ``in_meeting``.
+
+    Meet needs no extra work: its pre-join screen has the meeting URL and the
+    mic toggle, so meet_state() already reports it. Zoom's join/preview
+    screens are caught by window title via zoom_join_screen().
+    """
+    state = detect()
+    if state["in_meeting"]:
+        return state
+    if zoom_join_screen():
+        return {"app": "zoom", "state": "joining", "in_meeting": True}
+    return state
+
+
 def detect() -> dict[str, Any]:
     """Overall meeting state. Zoom wins if both are somehow active.
 

@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var sceneCollections: [String] = []
     @State private var dockedCollection: String = ""
     @State private var undockedCollection: String = ""
+    @State private var sleepCollection: String = ""
     @State private var dockMatch: String = ""
     @State private var haURL: String = ""
     @State private var haToken: String = ""
@@ -48,6 +49,9 @@ struct SettingsView: View {
                 }
                 Picker("Undocked", selection: $undockedCollection) {
                     ForEach(pickerChoices(current: undockedCollection), id: \.self, content: Text.init)
+                }
+                Picker("Sleep (no inputs)", selection: $sleepCollection) {
+                    ForEach(pickerChoices(current: sleepCollection), id: \.self, content: Text.init)
                 }
             }
             Section("Dock detection") {
@@ -181,6 +185,7 @@ struct SettingsView: View {
     private func load() {
         dockedCollection = Config.string("obs.scene_collections.docked", default: "Docked")
         undockedCollection = Config.string("obs.scene_collections.undocked", default: "Undocked")
+        sleepCollection = Config.string("obs.scene_collections.sleep", default: "Sleep")
         dockMatch = Config.string("dock.match", default: "Thunderbolt 5 Hub")
         haURL = Config.string("onair.home_assistant.url", default: "")
         haToken = Config.string("onair.home_assistant.token", default: "")
@@ -243,6 +248,7 @@ struct SettingsView: View {
     private func save() {
         Config.set("obs.scene_collections.docked", to: dockedCollection)
         Config.set("obs.scene_collections.undocked", to: undockedCollection)
+        Config.set("obs.scene_collections.sleep", to: sleepCollection)
         Config.set("dock.match", to: dockMatch)
         if !haURL.isEmpty { Config.set("onair.home_assistant.url", to: haURL) }
         if !haToken.isEmpty { Config.set("onair.home_assistant.token", to: haToken) }

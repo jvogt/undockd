@@ -28,6 +28,10 @@ DEFAULTS: dict[str, Any] = {
         "scene_collections": {
             "docked": "Docked",
             "undocked": "Undocked",
+            # A collection with no inputs; virtualcam-sleep switches to it
+            # when it stops the camera (see virtualcam_sleep.use_sleep_collection)
+            # so the camera hardware is fully released.
+            "sleep": "Sleep",
         },
     },
     "dock": {
@@ -75,6 +79,15 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     "virtualcam_sleep": {
+        # "meeting": run the virtual camera only while a Zoom / Google Meet
+        # meeting (or join screen) is open. "always": run it whenever the
+        # system is awake, stopping only after screensaver-length idle.
+        "mode": "meeting",
+        # When the daemon intentionally stops the camera, also switch OBS to
+        # the obs.scene_collections.sleep collection (no inputs), and restore
+        # the dock-mapped collection before starting the camera again. Only
+        # the daemon's own stops trigger this — a manual stop never does.
+        "use_sleep_collection": False,
         # Seconds subtracted from the screensaver timeout
         "margin_seconds": 10,
         "poll_interval": 5,
